@@ -89,7 +89,7 @@ void	MyMenuHandlerCallback(
 	
 	if (*(int*)command == request_dataitems) {
 		XPLMDebugString("RequestDataItems");
-		sendJSONRequest();
+		//sendJSONRequest();
 	}
 	else if (*(int*)command == start_close_loop) {
 		XPLMDebugString("StartCloseLoop");
