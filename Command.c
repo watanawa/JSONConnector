@@ -25,7 +25,7 @@ enum {
 static void	MyMenuHandlerCallback(
                                    void *               inMenuRef,    
                                    void *               inItemRef); 
-static void sendJSONRequest();
+static void sendJSONRequest(void);
 
 PLUGIN_API int XPluginStart(
 						char *		outName,
@@ -47,7 +47,7 @@ PLUGIN_API int XPluginStart(
 						1);						/* Force English */
 	
 	myMenu = XPLMCreateMenu(
-						"Command Sim", 
+						"JSONConnector", 
 						XPLMFindPluginsMenu(), 
 						mySubMenuItem, 			/* Menu Item to attach to. */
 						MyMenuHandlerCallback,	/* The handler */
@@ -56,8 +56,8 @@ PLUGIN_API int XPluginStart(
 	/* For each command, we set the item refcon to be the key command ID we wnat
 	 * to run.   Our callback will use this item refcon to do the right command.
 	 * This allows us to write only one callback for the menu. */	 
-	XPLMAppendMenuItem(myMenu, "Start JSONControl", (void *)start_close_loop, 1);
-	XPLMAppendMenuItem(myMenu, "Stop JSONControl", (void *)stop_close_loop, 1);
+	XPLMAppendMenuItem(myMenu, "Start JSONControl", (void *) start_close_loop, 1);
+	XPLMAppendMenuItem(myMenu, "Stop JSONControl", (void *) stop_close_loop, 1);
 	XPLMAppendMenuItem(myMenu, "Request DataItems", (void *) request_dataitems, 1);
 	return 1;
 }
@@ -89,6 +89,7 @@ void	MyMenuHandlerCallback(
 	
 	if (*(int*)command == request_dataitems) {
 		XPLMDebugString("RequestDataItems");
+		sendJSONRequest();
 	}
 	else if (*(int*)command == start_close_loop) {
 		XPLMDebugString("StartCloseLoop");
@@ -96,17 +97,18 @@ void	MyMenuHandlerCallback(
 	else if (*(int*)command == stop_close_loop) {
 		XPLMDebugString("StopCloseLoop");
 	}
+	/*
 	char buffer[256] = "";
 	sprintf(buffer, "%i", (*(int*)command) );
 	strcat(buffer, "Test");
-	XPLMDebugString(buffer);
-
+	XPLMDebugString(buffer);*/
+	
 	//XPLMCommandKeyStroke((XPLMCommandKeyID) inItemRef);
 }
 
-void sendJSONRequest() {
+void sendJSONRequest(void) {
 	XPLMDebugString("Sending JSONRequest");
-	//json_object *jsonObject;
-	//jsonObject = json_tokener_parse("{\"JSONDebugData\":[[\"Periodic\",\"SYS_ControlHandler_Context\"]]}");
+	json_object *jsonObject;
+	jsonObject = json_tokener_parse("{\"JSONDebugData\":[[\"Periodic\",\"SYS_ControlHandler_Context\"]]}");
 }
 
