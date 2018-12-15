@@ -10,10 +10,12 @@
 #include "XPLMGraphics.h"
 #include "XPLMDisplay.h"
 #include "XPLMMenus.h"
+#include "XPLMDataAccess.h"
 #include "nlohmann/json.hpp"
 
 #define PORT 4004
 #define PROXYPORT 4002
+#define Pi 3.14159265358979323846
 
 #pragma comment (lib, "Ws2_32.lib")
 #pragma comment (lib, "Mswsock.lib")
@@ -29,9 +31,11 @@ void initializeDestinationAddress();
 void createMenu();
 void startLoopControl();
 void stopLoopControl();
-void createThreads();
-unsigned int processJSONMessage(void *);
-unsigned int outputJSONMessage(void *);
+void createThread();
+unsigned int jsonLoopControl(void * dummy);
+void processJSONMessage(json jsonObject);
+void outputJSONMessage();
+void initializeDatarefs();
 
 //GLOBAL VARIABLES
 int g_menu_container_idx; // The index of our menu item in the Plugins menu
@@ -40,41 +44,114 @@ SOCKET receivingSocket; //UDP SOCKET
 SOCKADDR_IN  destinationAddr;
 WSADATA wsaData;
 int bindingSuccesful = 0;
-HANDLE processJSONThread;
-HANDLE outputJSONThread;
+HANDLE jsonCloseLoopThread;
 int endThreads = 0;
-static char datarefControls[][256] = {  "sim/flightmodel/controls/vectrqst",        //COMMANDED THRUST
-										"sim/flightmodel/controls/wing1l_ail1def",	//WING 1 LEFT AILERON
-										"sim/flightmodel/controls/wing1r_ail1def",  //WING 1 RIGHT AILERON
-										"sim/flightmodel/controls/wing1l_fla1def",  //WING 1 LEFT FLAP
-										"sim/flightmodel/controls/wing1r_fla1def",	//WING 1 RIGHT FLAP
-										"sim/flightmodel/controls/hstab1_elv1def",	//Wing 1 ELEVATOR 1
-										"sim/flightmodel/controls/hstab2_elv1def",  //Wing 2 ELEVATOR 1 - Same value as the above
-										"sim/flightmodel/controls/vstab1_rud1def"   //Rudder theres just 1
+
+static char datarefNameOverride[][100] = {	"sim/operation/override/override_throttles",			//OVERRDIDE THROTLE FLAG						int	0/1
+											"sim/operation/override/override_control_surfaces"		//OVERRIDE CONTROL SURFACES						int 0/1
 };
-static char datarefOutputs[][256] = {	"sim/flightmodel/position/local_ax",		//X ACCELARATION		m/s^2	double
-										"sim/flightmodel/position/local_ay",		//Y ACCELARATION		m/s^2	double
-										"sim/flightmodel/position/local_az",		//Z ACCELARATION		m/s^2	double
-										"sim/flightmodel/position/Prad",			//ROLLRATE				rad/s	float
-										"sim/flightmodel/position/Qrad",			//PITCHRATE				rad/s	float
-										"sim/flightmodel/position/Rrad",			//YAWRATE				rad/s	float
-										"sim/flightmodel/position/phi",				//ROLL					DEGREES	float
-										"sim/flightmodel/position/theta",			//PITCH					DEGRESS float
-										"sim/flightmodel/position/psi",				//YAW					DEGRESS float
-										//SPEEDNORTH
-										//SPEEDEAST
-										//SPEEDDOWN
-										"sim/flightmodel/position/latitude",		//LATITUDE				DEGREES	double
-										"sim/flightmodel/position/longitude",		//LONGITUDE				DEGREES	double
-										"sim/flightmodel/position/elevation",		//ELEVATION ABOVE MSL	m		double
-										//ALTITUDEAGL
-										//COURSE OVER GROUND
-										"sim/flightmodel/position/groundspeed",		//GROUNDSPEED			m/s		float
-										"sim/flightmodel/failures/onground_any"		//AIRCRAFT IN GROUND			int 1=groundcontact
-										
+static XPLMDataRef datarefOverride[2] = {NULL};
 
-};				
+//Control arrays
+static char datarefNameControls[][256] = {  "sim/flightmodel/controls/vectrqst",					//COMMANDED THRUST								float 0..1
+											"sim/flightmodel/controls/wing1l_ail1def",				//WING 1 LEFT AILERON							float DEGREES
+											"sim/flightmodel/controls/wing1r_ail1def",				//WING 1 RIGHT AILERON							float DEGREES
+											"sim/flightmodel/controls/wing1l_fla1def",				//WING 1 LEFT FLAP								float DEGREES
+											"sim/flightmodel/controls/wing1r_fla1def",				//WING 1 RIGHT									float DEGREES
+											"sim/flightmodel/controls/hstab1_elv1def",				//Wing 1 ELEVATOR 1								float DEGREES
+											"sim/flightmodel/controls/hstab2_elv1def",				//Wing 2 ELEVATOR 1 - Same value as the above	float DEGREES
+											"sim/flightmodel/controls/vstab1_rud1def",				//Rudder theres just + means right				float DEGREES
+											"sim/flightmodel/controls/vstab2_rud1def"				//Rudder 2 for completion
+};
+static XPLMDataRef datarefControls[10] = { NULL };
 
+static char jsonControlVariableName[] = "SYS_ControlHandler_Context";
+static char jsonControlName[][100] = {	"PusherMotor",
+										"AileronLeft", //POSITIVE MEANS UP
+										"AileronRight",//POISTIVE MEANS DOWN
+										"FlapLeft",		
+										"FlapRight",	
+										"ElevatorLeft", //POSITIVE DOWN
+										"ElevatorRight",//POSITIVE DOWN
+										"RudderLeft",	//POSITIVE LEFT
+										"RudderRight", //POISTIVE LEFT
+										};
+static double jsonControlConversion[] = {	1,
+											-180/Pi*(1/20),
+											-180/Pi*(1/20),
+											180/Pi,
+											180/Pi,
+											-180/Pi*(1/20),
+											-180/Pi*(1/20),
+											-180/Pi*(1/20),
+											-180/Pi*(1/20),
+};
+
+//Output arrays
+static char datarefNameOutputs[][100] = {	"sim/flightmodel/forces/g_axil",			//ACCELERATION FRONT g	m/s^2	float
+											"sim/flightmodel/forces/g_side",			//ACCELERATION RIGHT g	m/s^2	float
+											"sim/flightmodel/forces/g_nrml",			//ACCELERATION DOWN	 g	m/s^2	float
+											"sim/flightmodel/position/Prad",			//ROLLRATE				rad/s	float
+											"sim/flightmodel/position/Qrad",			//PITCHRATE				rad/s	float
+											"sim/flightmodel/position/Rrad",			//YAWRATE				rad/s	float
+											"sim/flightmodel/position/true_phi",		//ROLL					DEGREES	float
+											"sim/flightmodel/position/true_theta",		//PITCH					DEGRESS float
+											"sim/flightmodel/position/true_psi",		//YAW					DEGRESS float
+											"sim/flightmodel/position/local_vz",		//SPEED SOUTH			m/s		float
+											"sim/flightmodel/position/local_vx",		//SPEED EAST			m/s		float
+											"sim/flightmodel/position/local_vy",		//SPEED UP				m/s		float
+											"sim/flightmodel/position/latitude",		//LATITUDE				DEGREES	double
+											"sim/flightmodel/position/longitude",		//LONGITUDE				DEGREES	double
+											"sim/flightmodel/position/elevation",		//ELEVATION ABOVE MSL	m		double
+											"sim/flightmodel/position/y_agl",			//ALTITUDE ABOVE GROUND	m		float
+											"sim/flightmodel/position/true_psi",		//Heading				DEGREES	float
+											"sim/flightmodel/position/groundspeed",		//GROUNDSPEED			m/s		float
+											"sim/flightmodel/failures/onground_any"		//AIRCRAFT IN GROUND			int 1=groundcontact
+
+
+};
+static XPLMDataRef datarefOutputs[19] = { NULL };
+static char jsonOutputVariableName[] = "SIM_AhrsGpsModel_Context";
+static char jsonOutputName[][100] = {	"AccelerationX",
+										"AccelerationY",
+										"AccelerationZ",
+										"RollRate",
+										"PitchRate",
+										"YawRate",
+										"Roll",
+										"Pitch",
+										"Yaw",
+										"SpeedNorth",
+										"SpeedEast",
+										"SpeedDown",
+										"LatitudeWgs84",
+										"LongitudeWgs84",
+										"AltitudeWgs84Geoid",
+										"AltitudeAgl",
+										"CourseOverGround",
+										"SpeedOverGround",
+										"TouchdownFlag"
+};
+static double jsonOutputConversion[] = {-9.81,		// g->m/s^2		
+										-9.81,		// g->m/s^2
+										-9.81,		// g->m/s^2
+										1,			
+										1,
+										1,
+										Pi / 180,	//Degrees->Rad
+										Pi / 180,	//Degrees->Rad
+										Pi / 180,	//Degrees->Rad
+										-1,			//Vsouth -> Vnorth
+										1,			
+										-1,			//Vup	 -> Vdown
+										Pi/180,		//Degrees->Rad
+										Pi/180,		//Degrees->Rad
+										1,
+										1,
+										Pi / 180,	//DEGRESS->Rad
+										1,
+										1,
+};
 
 //Windows necessary
 BOOL APIENTRY DllMain(HANDLE hModule,
@@ -101,8 +178,9 @@ PLUGIN_API int XPluginStart(char * outName, char * outSignature, char * outDescr
 	createMenu();
 	openSocket();
 	initializeDestinationAddress();
-	createThreads();
+	createThread();
 
+	initializeDatarefs();
 	return 1;
 }
 
@@ -112,8 +190,9 @@ PLUGIN_API void	XPluginStop(void)
 	WSACleanup();
 	XPLMDestroyMenu(g_menu_id);
 	endThreads = 1;
-	WaitForSingleObject(processJSONThread, INFINITE);
-	WaitForSingleObject(outputJSONThread, INFINITE);
+	startLoopControl();
+	WaitForSingleObject(jsonCloseLoopThread, 200L);
+	CloseHandle(jsonCloseLoopThread);
 }
 
 PLUGIN_API void XPluginDisable(void)
@@ -164,7 +243,7 @@ void myMenuHandler(void * in_menu_ref, void * in_item_ref) {
 
 void sendJsonRequest(void) {
 	json jsonObject;
-	json jsonArray = json::array({ { "Periodic" } ,{ "SYS_ControlHandler_Context" } });
+	json jsonArray = json::array({{"Periodic","SYS_ControlHandler_Context"}});
 	jsonObject["JSONDebugDataReadRequest"] = jsonArray;
 	std::string jsonString = jsonObject.dump();
 	int msgSent = sendto(receivingSocket, jsonString.c_str(),(int) jsonString.length(),0, (SOCKADDR *)&destinationAddr,sizeof(destinationAddr));
@@ -226,34 +305,109 @@ void initializeDestinationAddress() {
 	destinationAddr.sin_addr.s_addr = inet_addr(localIP);
 
 }
-void createThreads() {
-	processJSONThread = (HANDLE) _beginthreadex(NULL, 0, &processJSONMessage, NULL, CREATE_SUSPENDED, 0);
-	outputJSONThread = (HANDLE)_beginthreadex(NULL, 0, &outputJSONMessage, NULL, CREATE_SUSPENDED, 0);
+void createThread() {
+	jsonCloseLoopThread = (HANDLE)_beginthreadex(NULL, 0, &jsonLoopControl, NULL, CREATE_SUSPENDED, 0);
 }
 void startLoopControl() {
-	ResumeThread(processJSONThread);
-	ResumeThread(outputJSONThread);
+	//Throttle
+	XPLMSetDatai(datarefOverride[0],1);
+	//ControlSurface
+	XPLMSetDatai(datarefOverride[1],1);
+	ResumeThread(jsonCloseLoopThread);
 }
 void stopLoopControl() {
-	SuspendThread(processJSONThread);
-	SuspendThread(outputJSONThread);
+	//Throttle
+	XPLMSetDatai(datarefOverride[0], 0);
+	//ControlSurface
+	XPLMSetDatai(datarefOverride[1], 0);
+	SuspendThread(jsonCloseLoopThread);
 }
 
-unsigned int processJSONMessage(void * dummy) {
-	while (endThreads != 1) {
+
+unsigned int jsonLoopControl(void * dummy) {
+	char recvBuffer[6144];
+	while (endThreads == 0) { 
 		
-		Sleep(200L);
+		//Wait for receive
+		int result = recv(receivingSocket,recvBuffer,4048, 0 );
+		//Error case
+		if (result < 0) {
+			char temp[256] = "";
+			int errorCode = WSAGetLastError();
+			sprintf(temp, "Receiving error: %i\n", errorCode);
+			XPLMDebugString(temp);
+		}
+		else {
+			char* jsonString = (char*)calloc(result, 1);
+			memcpy(jsonString,recvBuffer,result);
+			json jsonObject;
+			try {
+				jsonObject = json::parse(jsonString);
+			}
+			catch (json::parse_error& e)
+			{
+				XPLMDebugString(e.what());
+			}
+			processJSONMessage(jsonObject);
+			free(jsonString);
+		}
+		outputJSONMessage();
+		Sleep(10L);
 	}
 	return 0;
 }
-unsigned int outputJSONMessage(void * dummy) {
-	long i = 0;
-	while (endThreads != 1) {
-		char temp[100];
-		sprintf(temp, "Threadtest %i", i);
-		XPLMDebugString(temp);
-		i++;
-		Sleep(200L);
+void processJSONMessage(json jsonObject) {
+	float controls[9] = { NULL };
+
+	//SET THESE VALUES FROM JSON MESSAGE
+	try {
+		for (int i = 0; i < 9; i++) {
+			controls[i] = jsonObject["JSONDebugDataMessage"][jsonControlVariableName][jsonControlName[i]].get<float>();
+		}
 	}
-	return 0;
+	//ERROR
+	catch(json::type_error& e){
+		XPLMDebugString(e.what());
+		return;
+	}
+	for (int i = 0; i < 9; i++) {
+		XPLMSetDataf(datarefControls[i], ((float)controls[i]*jsonControlConversion[i]));
+	}
+}
+void outputJSONMessage() {
+	json jsonOutput;
+	std::vector<json> jsonSubArray(19);
+	try {
+		for (int i = 0; i < 19; i++) {
+			if (i <= 14 && i >= 12) {
+				jsonSubArray[i] = json::array({jsonOutputVariableName,jsonOutputName[i],XPLMGetDatad(datarefOutputs[i])*jsonOutputConversion[i]});
+			}
+			else if (i == 18) {
+				jsonSubArray[i] = json::array({jsonOutputVariableName,jsonOutputName[i],XPLMGetDatai(datarefOutputs[i])*jsonOutputConversion[i]});
+			}
+			else {
+				jsonSubArray[i] = json::array({jsonOutputVariableName,jsonOutputName[i],((double)XPLMGetDataf(datarefOutputs[i])*jsonOutputConversion[i])});
+			}
+		}
+		jsonOutput["JSONDebugDataWriteRequest"] = jsonSubArray;
+	}
+	catch (json::type_error& e) {
+		XPLMDebugString(e.what());
+		return;
+	}
+	//XPLMDebugString(jsonOutput.dump().c_str());
+	//XPLMDebugString("\n");
+	int msgSent = sendto(receivingSocket, jsonOutput.dump().c_str(), (int)jsonOutput.dump().length(), 0, (SOCKADDR *)&destinationAddr, sizeof(destinationAddr));
+}
+
+void initializeDatarefs(){
+	for (int i = 0; i < 9; i++) {
+		datarefControls[i] = XPLMFindDataRef(datarefNameControls[i]);
+	}
+	for (int i = 0; i < 19; i++ ) {
+		datarefOutputs[i] = XPLMFindDataRef(datarefNameOutputs[i]);
+	}
+	for (int i = 0; i < 2; i++) {
+		datarefOverride[i] = XPLMFindDataRef(datarefNameOverride[i]);
+	}
 }
